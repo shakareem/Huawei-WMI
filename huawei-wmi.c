@@ -20,6 +20,9 @@
 #include <linux/wmi.h>
 #include <linux/hwmon.h>
 #include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+#include <linux/platform_profile.h>
+#endif
 #include <acpi/battery.h>
 
 #define HWMI_BUFF_SIZE 0x100
@@ -81,6 +84,7 @@ struct quirk_entry {
 	bool report_volume;
 	bool handle_kbdlight;
 	bool kbdlight_auto;
+	bool platform_profile;
 };
 
 static struct quirk_entry *quirks;
@@ -101,6 +105,12 @@ struct huawei_wmi {
 	bool temp_available;
 	bool smart_charge_available;
 	bool smart_charge_param_available;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+	bool platform_profile_available;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
+	struct platform_profile_handler profile_handler;
+#endif
+#endif
 
 	struct huawei_wmi_debug debug;
 	struct input_dev *idev[2];
@@ -220,6 +230,10 @@ static struct quirk_entry quirk_kbdlight_auto = {
 	.kbdlight_auto = true,
 };
 
+static struct quirk_entry quirk_honor_drbp = {
+	.platform_profile = true,
+};
+
 static struct quirk_entry quirk_mach_wx9 = {
 	.battery_reset = true,
 	.handle_kbdlight = false,
@@ -310,6 +324,15 @@ static const struct dmi_system_id huawei_quirks[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "MRA-XXX")
 		},
 		.driver_data = &quirk_kbdlight_auto
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRB-P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRB-P")
+		},
+		.driver_data = &quirk_honor_drbp
 	},
 	{  }
 };
@@ -1268,6 +1291,142 @@ static void huawei_wmi_power_unlock_exit(struct device *dev)
 		device_remove_file(dev, &dev_attr_power_unlock);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+static int huawei_wmi_platform_profile_apply(struct huawei_wmi *huawei,
+			enum platform_profile_option profile)
+{
+	int on;
+
+	switch (profile) {
+	case PLATFORM_PROFILE_BALANCED:
+		on = 0;
+		break;
+	case PLATFORM_PROFILE_PERFORMANCE:
+		on = 1;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return huawei_wmi_power_unlock_set(on);
+}
+
+static int huawei_wmi_platform_profile_get_current(struct huawei_wmi *huawei,
+			enum platform_profile_option *profile)
+{
+	int on, err;
+
+	err = huawei_wmi_power_unlock_get(&on);
+	if (err)
+		return err;
+
+	switch (on) {
+	case 0:
+		*profile = PLATFORM_PROFILE_BALANCED;
+		break;
+	case 1:
+		*profile = PLATFORM_PROFILE_PERFORMANCE;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+static int huawei_wmi_platform_profile_probe(void *drvdata,
+			unsigned long *choices)
+{
+	set_bit(PLATFORM_PROFILE_BALANCED, choices);
+	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+	return 0;
+}
+
+static int huawei_wmi_platform_profile_get(struct device *dev,
+			enum platform_profile_option *profile)
+{
+	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+
+	return huawei_wmi_platform_profile_get_current(huawei, profile);
+}
+
+static int huawei_wmi_platform_profile_set(struct device *dev,
+			enum platform_profile_option profile)
+{
+	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+
+	return huawei_wmi_platform_profile_apply(huawei, profile);
+}
+
+static const struct platform_profile_ops huawei_wmi_platform_profile_ops = {
+	.probe = huawei_wmi_platform_profile_probe,
+	.profile_get = huawei_wmi_platform_profile_get,
+	.profile_set = huawei_wmi_platform_profile_set,
+};
+#else
+static int huawei_wmi_platform_profile_get(
+			struct platform_profile_handler *handler,
+			enum platform_profile_option *profile)
+{
+	struct huawei_wmi *huawei = container_of(handler, struct huawei_wmi,
+			profile_handler);
+
+	return huawei_wmi_platform_profile_get_current(huawei, profile);
+}
+
+static int huawei_wmi_platform_profile_set(
+			struct platform_profile_handler *handler,
+			enum platform_profile_option profile)
+{
+	struct huawei_wmi *huawei = container_of(handler, struct huawei_wmi,
+			profile_handler);
+
+	return huawei_wmi_platform_profile_apply(huawei, profile);
+}
+#endif
+
+static void huawei_wmi_platform_profile_setup(struct device *dev)
+{
+	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+
+	if (!quirks || !quirks->platform_profile)
+		return;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	if (IS_ERR(devm_platform_profile_register(dev, "huawei-wmi", huawei,
+			&huawei_wmi_platform_profile_ops))) {
+		dev_warn(dev, "Failed to register platform profile provider\n");
+		return;
+	}
+#else
+	int err;
+
+	set_bit(PLATFORM_PROFILE_BALANCED, huawei->profile_handler.choices);
+	set_bit(PLATFORM_PROFILE_PERFORMANCE, huawei->profile_handler.choices);
+	huawei->profile_handler.profile_get = huawei_wmi_platform_profile_get;
+	huawei->profile_handler.profile_set = huawei_wmi_platform_profile_set;
+	err = platform_profile_register(&huawei->profile_handler);
+	if (err) {
+		dev_warn(dev, "Failed to register platform profile provider: %d\n", err);
+		return;
+	}
+#endif
+	huawei->platform_profile_available = true;
+}
+
+static void huawei_wmi_platform_profile_exit(struct device *dev)
+{
+	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
+	if (huawei->platform_profile_available)
+		platform_profile_remove();
+#endif
+	huawei->platform_profile_available = false;
+}
+#endif
+
 /* Hwmon subdriver */
 
 /* Fan speed */
@@ -1704,6 +1863,9 @@ static int huawei_wmi_probe(struct platform_device *pdev)
 		huawei_wmi_smart_charge_setup(&pdev->dev);
 		huawei_wmi_smart_charge_param_setup(&pdev->dev);
 		huawei_wmi_power_unlock_setup(&pdev->dev);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+		huawei_wmi_platform_profile_setup(&pdev->dev);
+#endif
 		huawei_wmi_kbdlight_timeout_setup(&pdev->dev);
 		huawei_wmi_kbdlight_setup(&pdev->dev);
 		huawei_wmi_leds_setup(&pdev->dev);
@@ -1733,6 +1895,9 @@ static void huawei_wmi_remove(struct platform_device *pdev)
 		huawei_wmi_kbdlight_exit(&pdev->dev);
 		huawei_wmi_kbdlight_timeout_exit(&pdev->dev);
 		huawei_wmi_power_unlock_exit(&pdev->dev);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+		huawei_wmi_platform_profile_exit(&pdev->dev);
+#endif
 		huawei_wmi_smart_charge_exit(&pdev->dev);
 		huawei_wmi_smart_charge_param_exit(&pdev->dev);
 		if (huawei_wmi->hwmon)

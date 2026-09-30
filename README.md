@@ -19,6 +19,19 @@ Battery protection can accessed from either `/sys/class/power_supply/BAT0/charge
 
 Fn-lock can be accessed from `/sys/devices/platform/huawei-wmi/fn_lock_state`
 
+## Platform profile
+
+On HONOR DRB-P, the driver exposes `balanced` and `performance` through the
+Linux platform profile interface. For example:
+
+```sh
+powerprofilesctl set performance
+powerprofilesctl set balanced
+```
+
+The driver reads the current mode from the firmware through WMI, so the
+reported profile also reflects changes made outside `power-profiles-daemon`.
+
 This driver requires kernel >= 5.1. If you're on kernel <= 5.0, please refer to
 tag [v1.0](https://github.com/aymanbagabas/Huawei-WMI/tree/v1.0) for kernel < 5.0 or tag [v3.2](https://github.com/aymanbagabas/Huawei-WMI/tree/v3.2) if you're running version 5.0.
 
