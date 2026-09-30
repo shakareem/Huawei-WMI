@@ -31,6 +31,9 @@ powerprofilesctl set balanced
 
 The driver reads the current mode from the firmware through WMI, so the
 reported profile also reflects changes made outside `power-profiles-daemon`.
+After an AC adapter event, the driver notifies the kernel profile interface
+after refreshing the firmware state, allowing `power-profiles-daemon` to
+observe automatic profile changes when switching between AC and battery.
 
 This driver requires kernel >= 5.1. If you're on kernel <= 5.0, please refer to
 tag [v1.0](https://github.com/aymanbagabas/Huawei-WMI/tree/v1.0) for kernel < 5.0 or tag [v3.2](https://github.com/aymanbagabas/Huawei-WMI/tree/v3.2) if you're running version 5.0.

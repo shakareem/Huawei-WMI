@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/sysfs.h>
+#include <linux/workqueue.h>
 #include <linux/wmi.h>
 #include <linux/hwmon.h>
 #include <linux/version.h>
@@ -107,6 +108,12 @@ struct huawei_wmi {
 	bool smart_charge_param_available;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 	bool platform_profile_available;
+	bool acpi_notifier_registered;
+	struct notifier_block acpi_nb;
+	struct delayed_work platform_profile_work;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	struct device *platform_profile_device;
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
 	struct platform_profile_handler profile_handler;
 #endif
@@ -1386,6 +1393,41 @@ static int huawei_wmi_platform_profile_set(
 }
 #endif
 
+static void huawei_wmi_platform_profile_work(struct work_struct *work)
+{
+	struct huawei_wmi *huawei = container_of(to_delayed_work(work),
+			struct huawei_wmi, platform_profile_work);
+	enum platform_profile_option profile;
+	int err;
+
+	err = huawei_wmi_platform_profile_get_current(huawei, &profile);
+	if (err) {
+		dev_warn(huawei->dev, "Failed to read platform profile after AC change: %d\n",
+			 err);
+		return;
+	}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	platform_profile_notify(huawei->platform_profile_device);
+#else
+	platform_profile_notify();
+#endif
+}
+
+static int huawei_wmi_acpi_notifier(struct notifier_block *nb,
+			unsigned long event, void *data)
+{
+	struct huawei_wmi *huawei = container_of(nb, struct huawei_wmi, acpi_nb);
+	struct acpi_bus_event *acpi_event = data;
+
+	if (!acpi_event || strcmp(acpi_event->device_class, "ac_adapter"))
+		return NOTIFY_DONE;
+
+	mod_delayed_work(system_wq, &huawei->platform_profile_work,
+			 msecs_to_jiffies(500));
+	return NOTIFY_OK;
+}
+
 static void huawei_wmi_platform_profile_setup(struct device *dev)
 {
 	struct huawei_wmi *huawei = dev_get_drvdata(dev);
@@ -1394,8 +1436,9 @@ static void huawei_wmi_platform_profile_setup(struct device *dev)
 		return;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
-	if (IS_ERR(devm_platform_profile_register(dev, "huawei-wmi", huawei,
-			&huawei_wmi_platform_profile_ops))) {
+	huawei->platform_profile_device = devm_platform_profile_register(dev,
+			"huawei-wmi", huawei, &huawei_wmi_platform_profile_ops);
+	if (IS_ERR(huawei->platform_profile_device)) {
 		dev_warn(dev, "Failed to register platform profile provider\n");
 		return;
 	}
@@ -1413,11 +1456,25 @@ static void huawei_wmi_platform_profile_setup(struct device *dev)
 	}
 #endif
 	huawei->platform_profile_available = true;
+	INIT_DELAYED_WORK(&huawei->platform_profile_work,
+			huawei_wmi_platform_profile_work);
+	huawei->acpi_nb.notifier_call = huawei_wmi_acpi_notifier;
+	if (register_acpi_notifier(&huawei->acpi_nb)) {
+		dev_warn(dev, "Failed to register AC adapter notifier\n");
+		return;
+	}
+	huawei->acpi_notifier_registered = true;
 }
 
 static void huawei_wmi_platform_profile_exit(struct device *dev)
 {
 	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+
+	if (huawei->acpi_notifier_registered)
+		unregister_acpi_notifier(&huawei->acpi_nb);
+	if (huawei->platform_profile_available)
+		cancel_delayed_work_sync(&huawei->platform_profile_work);
+	huawei->acpi_notifier_registered = false;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
 	if (huawei->platform_profile_available)
