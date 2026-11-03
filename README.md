@@ -3,6 +3,16 @@
 [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=7TMEEVMB4S4G8&currency_code=USD&source=url)
 [![Donate](https://img.shields.io/badge/Donate-Buy%20Me%20A%20Coffee-green)](https://www.buymeacoffee.com/aymanbagabas)
 
+## Contents
+
+- [Platform profile](#platform-profile)
+- [Fan and temperature sensors](#fan-and-temperature-sensors)
+- [Installation](#installation)
+- [Keyboard](#keyboard)
+- [TODO](#todo)
+- [Contribution](#contribution)
+- [Credits](#credits)
+
 **NOTE: Version v2.0 is the one in mainline kernel >= 5.0, this repository is used for
 testing and development purposes. v3.3 has been merged in kernel 5.5**
 
@@ -18,6 +28,66 @@ device mapping to kernel. Supported features are:
 Battery protection can accessed from either `/sys/class/power_supply/BAT0/charge_control_{start,end}_threshold` or `/sys/devices/platform/huawei-wmi/charge_control_thresholds`
 
 Fn-lock can be accessed from `/sys/devices/platform/huawei-wmi/fn_lock_state`
+
+## Platform profile
+
+On supported HONOR laptops, the driver exposes the firmware performance mode
+through the Linux platform profile interface, so power-profiles-daemon and
+other consumers can select it. The DMI allowlist covers ZQC-P, XWC-P, FMB-P
+(including FMB-PM), BCC-N, DRA-XX, DRB-P, MRA-XXX, MRB-XXX, FRB-X, GLO-GXXX,
+and FMI-XX. The available profiles depend on the board revision:
+
+| Models | Linux profiles | Firmware modes |
+| --- | --- | --- |
+| HONOR models without HUNTER | `low-power`, `balanced` | `0`, `1` |
+| Confirmed HUNTER revisions | `low-power`, `balanced`, `performance` | `0`, `1`, `3` |
+
+HUNTER mode (`3`) is enabled only for HONOR DRA-XX board versions M1030/M1040
+and DRB-P-PCB board versions M1020/M1100. The mapping is the same on every
+model: `low-power` maps to firmware mode `0` and `balanced` to mode `1`. On
+the confirmed HUNTER revisions, firmware mode `3` is exposed as the Linux
+`performance` profile. Other models do not advertise `performance`, because
+the firmware has no third mode to apply.
+
+On Linux 6.9 and newer, select the profile through the per-driver class
+device:
+
+```sh
+sh -c '
+  PROFILE_DIR=$(
+      for d in /sys/class/platform-profile/platform-profile-*; do
+          [ "$(cat "$d/name")" = "huawei-wmi" ] && {
+              echo "$d"
+              break
+          }
+      done
+  )
+
+  cat "$PROFILE_DIR/choices"
+  echo performance | sudo tee "$PROFILE_DIR/profile"
+'
+```
+
+On Linux 6.1 through 6.8, the driver uses the legacy system-wide interface:
+
+```sh
+cat /sys/firmware/acpi/platform_profile_choices
+echo performance | sudo tee /sys/firmware/acpi/platform_profile
+```
+
+Setting a profile always attempts the requested firmware mode and then reads
+back what the firmware actually applied. If the firmware rejects or silently
+ignores the request (for example on battery power or with a low-wattage
+adapter), the driver restores the mode that was active before the request and
+returns an error. The reported profile therefore reflects the mode the
+firmware actually kept.
+
+The firmware can also change the mode on its own, for example when it reverts
+HUNTER because the original power adapter is not connected. Mode change WMI
+events are consumed by the driver and re-read the current mode from the
+firmware; when it differs from the last reported mode, the platform profile
+interface is notified. This is purely event driven, with no polling and no
+guessing from AC adapter presence.
 
 This driver requires kernel >= 6.1. If you're still on a 5.x kernel,
 please use tag [v4.0](https://github.com/aymanbagabas/Huawei-WMI/tree/v4.0)

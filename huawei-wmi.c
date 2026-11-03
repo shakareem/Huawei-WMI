@@ -21,6 +21,8 @@
 #include <linux/wmi.h>
 #include <linux/hwmon.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
+#include <linux/platform_profile.h>
 #include <acpi/battery.h>
 
 #define HWMI_BUFF_SIZE 0x100
@@ -60,8 +62,8 @@ enum {
 	KBDLIGHT_MODE_GET       = 0x00001306, /* \GKBM */
 	KBDLIGHT_MODE_SET       = 0x00001406, /* \SKBM */
 	KBDLIGHT_SET_AUTO       = 0x00001506, /* \SKBL */
-	POWER_UNLOCK_SET        = 0x00000F04, /* \STUB */
-	POWER_UNLOCK_GET        = 0x00000E04, /* \STUB */
+	PLATFORM_PROFILE_GET    = 0x00000E04, /* \GTUB */
+	PLATFORM_PROFILE_SET    = 0x00000F04, /* \STUB */
 	FAN_SPEED_GET           = 0x00000802, /* \GFNS */
 	TEMP_GET                = 0x00000202, /* \GTMP */
 	TOUCHPAD_GET            = 0x00000F02, /* \GTPS */
@@ -84,6 +86,9 @@ struct quirk_entry {
 	bool report_volume;
 	bool handle_kbdlight;
 	bool kbdlight_auto;
+	bool fan_ec;
+	bool platform_profile;
+	bool platform_profile_hunter;
 };
 
 static struct quirk_entry *quirks;
@@ -99,11 +104,20 @@ struct huawei_wmi {
 	bool kbdlight_available;
 	bool kbdlight_quirk_input;
 	bool kbdlight_timeout_available;
-	bool power_unlock_available;
 	bool fan_speed_available;
 	bool temp_available;
 	bool smart_charge_available;
 	bool smart_charge_param_available;
+	struct delayed_work profile_sync_work;
+	/* protects last_perf_mode */
+	struct mutex profile_sync_lock;
+	int last_perf_mode;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	struct device *platform_profile_dev;
+#else
+	bool platform_profile_registered;
+	struct platform_profile_handler profile_handler;
+#endif
 
 	struct huawei_wmi_debug debug;
 	struct input_dev *idev[2];
@@ -221,6 +235,38 @@ static struct quirk_entry quirk_skip_kbdlight = {
 static struct quirk_entry quirk_kbdlight_auto = {
 	.handle_kbdlight = false,
 	.kbdlight_auto = true,
+	.platform_profile = true,
+};
+
+static struct quirk_entry quirk_honor_platform_profile = {
+	.handle_kbdlight = true,
+	.platform_profile = true,
+};
+
+static struct quirk_entry quirk_honor_zqcp_m1010 = {
+	.handle_kbdlight = true,
+	.fan_ec = true,
+	.platform_profile = true,
+};
+
+static struct quirk_entry quirk_honor_fmbp = {
+	.handle_kbdlight = true,
+	.platform_profile = true,
+};
+
+static struct quirk_entry quirk_honor_hunter = {
+	.platform_profile = true,
+	.platform_profile_hunter = true,
+};
+
+static struct quirk_entry quirk_honor_dra_hunter = {
+	.handle_kbdlight = true,
+	.platform_profile = true,
+	.platform_profile_hunter = true,
+};
+
+static struct quirk_entry quirk_honor_drbp = {
+	.platform_profile = true,
 };
 
 static struct quirk_entry quirk_mach_wx9 = {
@@ -313,6 +359,163 @@ static const struct dmi_system_id huawei_quirks[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "MRA-XXX")
 		},
 		.driver_data = &quirk_kbdlight_auto
+	},
+	/*
+	 * Keep board-specific entries before product-wide matches: dmi_matched()
+	 * returns nonzero, which stops dmi_check_system() after the first match.
+	 */
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR ZQC-P M1010 EC keyboard backlight",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ZQC-P"),
+			DMI_MATCH(DMI_BOARD_NAME, "ZQC-P-PCB"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1010")
+		},
+		.driver_data = &quirk_honor_zqcp_m1010
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRA-XX HUNTER M1030",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1030")
+		},
+		.driver_data = &quirk_honor_dra_hunter
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRA-XX HUNTER M1040",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1040")
+		},
+		.driver_data = &quirk_honor_dra_hunter
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRB-P HUNTER M1020",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRB-P"),
+			DMI_MATCH(DMI_BOARD_NAME, "DRB-P-PCB"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1020")
+		},
+		.driver_data = &quirk_honor_hunter
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRB-P HUNTER M1100",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRB-P"),
+			DMI_MATCH(DMI_BOARD_NAME, "DRB-P-PCB"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1100")
+		},
+		.driver_data = &quirk_honor_hunter
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR ZQC-P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ZQC-P")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR XWC-P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XWC-P")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR FMB-P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "FMB-P"),
+			DMI_MATCH(DMI_BOARD_NAME, "FMB-P-PCB")
+		},
+		.driver_data = &quirk_honor_fmbp
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR FMB-PM",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "FMB-PM")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR BCC-N",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "BCC-N")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR MRB-XXX",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "MRB-XXX")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR FRB-X",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "FRB-X")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR GLO-GXXX",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "GLO-GXXX")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR FMI-XX",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "FMI-XX")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRA-XX",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX")
+		},
+		.driver_data = &quirk_honor_platform_profile
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR DRB-P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "DRB-P")
+		},
+		.driver_data = &quirk_honor_drbp
 	},
 	{  }
 };
@@ -1291,84 +1494,388 @@ static void huawei_wmi_kbdlight_timeout_exit(struct device *dev)
 		device_remove_file(dev, &dev_attr_kbdlight_timeout);
 }
 
-/* Power unlock */
+/* Platform profile */
 
-static int huawei_wmi_power_unlock_get(int *on)
+/*
+ * Performance modes reported by GTUB and accepted by STUB. HUNTER is only
+ * present on gaming models; the firmware of other models rejects it.
+ */
+#define HWMI_PERF_MODE_SMART		0
+#define HWMI_PERF_MODE_PERFORMANCE	1
+#define HWMI_PERF_MODE_HUNTER		3
+
+/*
+ * WMI events reporting performance mode changes. The firmware derives
+ * these from the EC mode state, so they also arrive when the mode was
+ * changed by the firmware itself rather than by a hotkey. 0x2a0/0x2a1/0x2a8
+ * carry the resulting mode, 0x2a5/0x2a6 are toggle requests without state.
+ */
+#define HWMI_EVENT_MODE_SMART		0x2a0
+#define HWMI_EVENT_MODE_PERFORMANCE	0x2a1
+#define HWMI_EVENT_MODE_TOGGLE_ALT	0x2a5
+#define HWMI_EVENT_MODE_TOGGLE		0x2a6
+#define HWMI_EVENT_MODE_HUNTER		0x2a8
+
+#define HWMI_MODE_EVENT_DEBOUNCE_MS	500
+
+static bool huawei_wmi_platform_profile_active(struct huawei_wmi *huawei)
 {
-	u8 ret[HWMI_BUFF_SIZE] = { 0 };
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	return huawei->platform_profile_dev;
+#else
+	return huawei->platform_profile_registered;
+#endif
+}
+
+static int huawei_wmi_perf_mode_get(int *mode)
+{
+	u8 ret[0x100] = { 0 };
 	int err;
 
-	err = huawei_wmi_cmd(POWER_UNLOCK_GET, ret, HWMI_BUFF_SIZE);
+	err = huawei_wmi_cmd(PLATFORM_PROFILE_GET, ret, sizeof(ret));
 	if (err)
 		return err;
 
-	if (on)
-		*on = ret[1];
+	*mode = ret[1];
 
 	return 0;
 }
 
-static int huawei_wmi_power_unlock_set(int on)
+static int huawei_wmi_perf_mode_set(int mode)
 {
 	union hwmi_arg arg;
 
-	arg.cmd = POWER_UNLOCK_SET;
-	arg.args[2] = on;
+	arg.cmd = PLATFORM_PROFILE_SET;
+	arg.args[2] = mode;
 
 	return huawei_wmi_cmd(arg.cmd, NULL, 0);
-
 }
 
-static ssize_t power_unlock_show(struct device *dev,
-		struct device_attribute *attr,
-		char *buf)
+/*
+ * Write the requested mode and read back what the firmware applied. The
+ * firmware accepts mode changes it cannot currently sustain (for example
+ * HUNTER requires the original power adapter) and then leaves or reverts
+ * the mode on its own. When the read-back does not match the request,
+ * restore the previous mode and report -EBUSY so userspace is never told
+ * a mode was applied that the firmware does not actually run.
+ */
+static int huawei_wmi_perf_mode_set_checked(int mode)
 {
-	int err, on;
+	int prev, actual, err;
 
-	err = huawei_wmi_power_unlock_get(&on);
+	err = huawei_wmi_perf_mode_get(&prev);
 	if (err)
 		return err;
 
-	return sysfs_emit(buf, "%d\n", on);
+	err = huawei_wmi_perf_mode_set(mode);
+	if (err)
+		return err;
+
+	err = huawei_wmi_perf_mode_get(&actual);
+	if (err) {
+		/*
+		 * The write may have been applied but cannot be verified.
+		 * Best-effort restore of the previous mode so the firmware
+		 * state stays known to the driver.
+		 */
+		if (huawei_wmi_perf_mode_set(prev))
+			dev_warn(huawei_wmi->dev,
+				 "Failed to restore performance mode %d after a read-back failure\n",
+				 prev);
+
+		return err;
+	}
+
+	if (actual == mode)
+		return 0;
+
+	dev_dbg(huawei_wmi->dev,
+		"Firmware did not apply mode %d (reported %d), restoring mode %d\n",
+		mode, actual, prev);
+
+	err = huawei_wmi_perf_mode_set(prev);
+	if (err)
+		dev_warn(huawei_wmi->dev,
+			 "Failed to restore performance mode %d: %d\n",
+			 prev, err);
+
+	return -EBUSY;
 }
 
-static ssize_t power_unlock_store(struct device *dev,
-		struct device_attribute *attr,
-		const char *buf, size_t size)
+/*
+ * The firmware "Smart" and "High performance" modes are exposed as the
+ * low-power and balanced profiles; HUNTER, where present, is exposed as
+ * the performance profile.
+ */
+static int huawei_wmi_platform_profile_from_mode(int mode,
+		enum platform_profile_option *profile)
 {
-	int on, err;
-
-	if (kstrtoint(buf, 10, &on) ||
-			on < 0 || on > 1)
+	switch (mode) {
+	case HWMI_PERF_MODE_SMART:
+		*profile = PLATFORM_PROFILE_LOW_POWER;
+		return 0;
+	case HWMI_PERF_MODE_PERFORMANCE:
+		*profile = PLATFORM_PROFILE_BALANCED;
+		return 0;
+	case HWMI_PERF_MODE_HUNTER:
+		if (!quirks->platform_profile_hunter)
+			return -EINVAL;
+		*profile = PLATFORM_PROFILE_PERFORMANCE;
+		return 0;
+	default:
 		return -EINVAL;
+	}
+}
 
-	err = huawei_wmi_power_unlock_set(on);
+static int
+huawei_wmi_platform_profile_to_mode(enum platform_profile_option profile,
+				    int *mode)
+{
+	switch (profile) {
+	case PLATFORM_PROFILE_LOW_POWER:
+		*mode = HWMI_PERF_MODE_SMART;
+		return 0;
+	case PLATFORM_PROFILE_BALANCED:
+		*mode = HWMI_PERF_MODE_PERFORMANCE;
+		return 0;
+	case PLATFORM_PROFILE_PERFORMANCE:
+		if (!quirks->platform_profile_hunter)
+			return -EOPNOTSUPP;
+		*mode = HWMI_PERF_MODE_HUNTER;
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+static int huawei_wmi_platform_profile_probe(void *drvdata,
+		unsigned long *choices)
+{
+	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
+	set_bit(PLATFORM_PROFILE_BALANCED, choices);
+	if (quirks->platform_profile_hunter)
+		set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+
+	return 0;
+}
+
+static int huawei_wmi_platform_profile_get(struct device *dev,
+		enum platform_profile_option *profile)
+{
+	int mode, err;
+
+	err = huawei_wmi_perf_mode_get(&mode);
 	if (err)
 		return err;
 
-	return size;
+	return huawei_wmi_platform_profile_from_mode(mode, profile);
 }
 
-static DEVICE_ATTR_RW(power_unlock);
-
-static void huawei_wmi_power_unlock_setup(struct device *dev)
+static int huawei_wmi_platform_profile_set(struct device *dev,
+		enum platform_profile_option profile)
 {
 	struct huawei_wmi *huawei = dev_get_drvdata(dev);
-	huawei->power_unlock_available = true;
-	if (huawei_wmi_power_unlock_get(NULL)) {
-		huawei->power_unlock_available = false;
+	int mode, err;
+
+	err = huawei_wmi_platform_profile_to_mode(profile, &mode);
+	if (err)
+		return err;
+
+	/*
+	 * Serialize the whole write/read-back/restore transaction and the
+	 * cache update against the sync workers.
+	 */
+	mutex_lock(&huawei->profile_sync_lock);
+	err = huawei_wmi_perf_mode_set_checked(mode);
+	if (!err)
+		huawei->last_perf_mode = mode;
+	mutex_unlock(&huawei->profile_sync_lock);
+
+	/*
+	 * A later firmware-side revert, e.g. of HUNTER when the original
+	 * power adapter is not connected, is reported through the mode
+	 * change events handled above.
+	 */
+	return err;
+}
+
+static const struct platform_profile_ops huawei_wmi_platform_profile_ops = {
+	.probe = huawei_wmi_platform_profile_probe,
+	.profile_get = huawei_wmi_platform_profile_get,
+	.profile_set = huawei_wmi_platform_profile_set,
+};
+#else
+static int
+huawei_wmi_platform_profile_get(struct platform_profile_handler *handler,
+				enum platform_profile_option *profile)
+{
+	int mode, err;
+
+	err = huawei_wmi_perf_mode_get(&mode);
+	if (err)
+		return err;
+
+	return huawei_wmi_platform_profile_from_mode(mode, profile);
+}
+
+static int
+huawei_wmi_platform_profile_set(struct platform_profile_handler *handler,
+				enum platform_profile_option profile)
+{
+	struct huawei_wmi *huawei = container_of(handler,
+			struct huawei_wmi, profile_handler);
+	int mode, err;
+
+	err = huawei_wmi_platform_profile_to_mode(profile, &mode);
+	if (err)
+		return err;
+
+	mutex_lock(&huawei->profile_sync_lock);
+	err = huawei_wmi_perf_mode_set_checked(mode);
+	if (!err)
+		huawei->last_perf_mode = mode;
+	mutex_unlock(&huawei->profile_sync_lock);
+
+	return err;
+}
+#endif
+
+/*
+ * Re-read the firmware mode and return true when it differs from the last
+ * mode reported to userspace. The firmware can change the mode on its own,
+ * e.g. it reverts HUNTER shortly after accepting it when the original power
+ * adapter is not connected, so the cached mode must be refreshed from the
+ * firmware before userspace is notified. The lock is held across the read
+ * and the cache update so that a concurrent profile change cannot be
+ * overwritten with a stale read.
+ */
+static bool huawei_wmi_platform_profile_sync(struct huawei_wmi *huawei)
+{
+	int mode, err;
+	bool changed = false;
+
+	mutex_lock(&huawei->profile_sync_lock);
+
+	err = huawei_wmi_perf_mode_get(&mode);
+	if (!err && mode != huawei->last_perf_mode) {
+		huawei->last_perf_mode = mode;
+		changed = true;
+	}
+
+	mutex_unlock(&huawei->profile_sync_lock);
+
+	return changed;
+}
+
+/*
+ * platform_profile_notify() takes the platform profile core lock and must
+ * be called with profile_sync_lock released.
+ */
+static void
+huawei_wmi_platform_profile_notify_changed(struct huawei_wmi *huawei)
+{
+	if (!huawei_wmi_platform_profile_sync(huawei))
+		return;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	platform_profile_notify(huawei->platform_profile_dev);
+#else
+	platform_profile_notify();
+#endif
+}
+
+static void huawei_wmi_platform_profile_sync_work(struct work_struct *work)
+{
+	struct huawei_wmi *huawei = container_of(to_delayed_work(work),
+			struct huawei_wmi, profile_sync_work);
+
+	huawei_wmi_platform_profile_notify_changed(huawei);
+}
+
+static void huawei_wmi_platform_profile_setup(struct device *dev)
+{
+	struct huawei_wmi *huawei = dev_get_drvdata(dev);
+	enum platform_profile_option profile;
+	int mode;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
+	int err;
+#endif
+
+	if (!quirks->platform_profile)
+		return;
+
+	/*
+	 * Not every firmware implements the performance mode commands, and
+	 * an unexpected current mode means the mapping is not safe to use.
+	 */
+	if (huawei_wmi_perf_mode_get(&mode) ||
+	    huawei_wmi_platform_profile_from_mode(mode, &profile))
+		return;
+
+	mutex_init(&huawei->profile_sync_lock);
+	INIT_DELAYED_WORK(&huawei->profile_sync_work,
+			  huawei_wmi_platform_profile_sync_work);
+	huawei->last_perf_mode = mode;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	huawei->platform_profile_dev = platform_profile_register(dev,
+			"huawei-wmi", huawei, &huawei_wmi_platform_profile_ops);
+	if (IS_ERR(huawei->platform_profile_dev)) {
+		dev_warn(dev, "Failed to register platform profile: %ld\n",
+			 PTR_ERR(huawei->platform_profile_dev));
+		huawei->platform_profile_dev = NULL;
+	}
+#else
+	set_bit(PLATFORM_PROFILE_LOW_POWER, huawei->profile_handler.choices);
+	set_bit(PLATFORM_PROFILE_BALANCED, huawei->profile_handler.choices);
+	if (quirks->platform_profile_hunter)
+		set_bit(PLATFORM_PROFILE_PERFORMANCE,
+			huawei->profile_handler.choices);
+
+	huawei->profile_handler.profile_get =
+		huawei_wmi_platform_profile_get;
+	huawei->profile_handler.profile_set =
+		huawei_wmi_platform_profile_set;
+
+	err = platform_profile_register(&huawei->profile_handler);
+	if (err) {
+		dev_warn(dev, "Failed to register platform profile: %d\n",
+			 err);
 		return;
 	}
 
-	device_create_file(dev, &dev_attr_power_unlock);
+	huawei->platform_profile_registered = true;
+#endif
 }
 
-static void huawei_wmi_power_unlock_exit(struct device *dev)
+static void huawei_wmi_platform_profile_exit(struct device *dev)
 {
 	struct huawei_wmi *huawei = dev_get_drvdata(dev);
 
-	if (huawei->power_unlock_available)
-		device_remove_file(dev, &dev_attr_power_unlock);
+	if (!huawei_wmi_platform_profile_active(huawei))
+		return;
+
+	/*
+	 * The WMI notify handlers are already removed at this point, so the
+	 * work cannot be rescheduled. Drain it, unregister the profile device
+	 * to close the profile_set path, then drain once more to catch a work
+	 * queued by a concurrent set just before the unregistration.
+	 * platform_profile_notify() and platform_profile_remove() are both
+	 * serialized by the platform profile core lock, so no notification
+	 * can be in flight after the second drain.
+	 */
+	cancel_delayed_work_sync(&huawei->profile_sync_work);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	platform_profile_remove(huawei->platform_profile_dev);
+	huawei->platform_profile_dev = NULL;
+#else
+	platform_profile_remove();
+	huawei->platform_profile_registered = false;
+#endif
+
+	cancel_delayed_work_sync(&huawei->profile_sync_work);
 }
 
 /* Hwmon subdriver */
@@ -1687,6 +2194,30 @@ static void huawei_wmi_process_key(struct input_dev *idev, int code)
 		kfree(response.pointer);
 	}
 
+	/*
+	 * Performance mode change notifications are not keys. Toggle events
+	 * do not carry the new mode, so re-read it from the firmware in a
+	 * work item instead of parsing the event here; the WMI notify
+	 * callback must not evaluate WMI methods inline.
+	 */
+	if (huawei_wmi_platform_profile_active(huawei)) {
+		switch (code) {
+		case HWMI_EVENT_MODE_SMART:
+		case HWMI_EVENT_MODE_PERFORMANCE:
+		case HWMI_EVENT_MODE_TOGGLE_ALT:
+		case HWMI_EVENT_MODE_TOGGLE:
+		case HWMI_EVENT_MODE_HUNTER:
+			dev_dbg(&idev->dev, "Platform profile event 0x%04x\n",
+				code);
+			mod_delayed_work(system_wq,
+					 &huawei->profile_sync_work,
+					 msecs_to_jiffies(HWMI_MODE_EVENT_DEBOUNCE_MS));
+			return;
+		default:
+			break;
+		}
+	}
+
 	key = sparse_keymap_entry_from_scancode(idev, code);
 	if (!key) {
 		dev_info(&idev->dev, "Unknown key pressed, code: 0x%04x\n", code);
@@ -1806,12 +2337,12 @@ static int huawei_wmi_probe(struct platform_device *pdev)
 		}
 		huawei_wmi_smart_charge_setup(&pdev->dev);
 		huawei_wmi_smart_charge_param_setup(&pdev->dev);
-		huawei_wmi_power_unlock_setup(&pdev->dev);
 		huawei_wmi_kbdlight_timeout_setup(&pdev->dev);
 		huawei_wmi_kbdlight_setup(&pdev->dev);
 		huawei_wmi_leds_setup(&pdev->dev);
 		huawei_wmi_fn_lock_setup(&pdev->dev);
 		huawei_wmi_battery_setup(&pdev->dev);
+		huawei_wmi_platform_profile_setup(&pdev->dev);
 		huawei_wmi_debugfs_setup(&pdev->dev);
 	}
 
@@ -1835,7 +2366,7 @@ static void huawei_wmi_remove(struct platform_device *pdev)
 		huawei_wmi_fn_lock_exit(&pdev->dev);
 		huawei_wmi_kbdlight_exit(&pdev->dev);
 		huawei_wmi_kbdlight_timeout_exit(&pdev->dev);
-		huawei_wmi_power_unlock_exit(&pdev->dev);
+		huawei_wmi_platform_profile_exit(&pdev->dev);
 		huawei_wmi_smart_charge_exit(&pdev->dev);
 		huawei_wmi_smart_charge_param_exit(&pdev->dev);
 		if (huawei_wmi->hwmon)
