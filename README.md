@@ -89,6 +89,23 @@ firmware; when it differs from the last reported mode, the platform profile
 interface is notified. This is purely event driven, with no polling and no
 guessing from AC adapter presence.
 
+## Fan and temperature sensors
+
+The driver registers a read-only hwmon device named `huawei_wmi`:
+
+* `fan1_input` and `fan2_input` report the current fan RPM from the firmware
+  `GFNS` command. On ZQC-P M1010 the driver falls back to the EC tachometer
+  words at `0x2c-0x2f` when the firmware command does not answer. Values
+  above 20000 RPM are rejected as torn reads.
+* `temp1_input` through `temp11_input` report the firmware `GTMP` zones in
+  millidegrees Celsius. The labels follow the firmware table: `cpu`, `TP01`,
+  `TSLO`, `TP06`, `TNTC`, `CNTC`, `DNTC`, `battery`, `TP0C`, `TP07`, `TP04`.
+
+The device is registered only when at least one sensor group answers. Fan
+target RPM and fan control are deliberately not exposed: the firmware fan
+table write command is not safe to drive from the OS and no reliable
+read-back of the selected table has been observed.
+
 This driver requires kernel >= 6.1. If you're still on a 5.x kernel,
 please use tag [v4.0](https://github.com/aymanbagabas/Huawei-WMI/tree/v4.0)
 (the last release tested against 5.x); for kernel < 5.0 see
