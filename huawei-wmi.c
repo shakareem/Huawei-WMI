@@ -87,7 +87,6 @@ struct quirk_entry {
 	bool handle_kbdlight;
 	bool kbdlight_auto;
 	bool fan_ec;
-	bool platform_profile;
 	bool platform_profile_hunter;
 };
 
@@ -234,38 +233,16 @@ static struct quirk_entry quirk_skip_kbdlight = {
 static struct quirk_entry quirk_kbdlight_auto = {
 	.handle_kbdlight = false,
 	.kbdlight_auto = true,
-	.platform_profile = true,
 };
 
-static struct quirk_entry quirk_honor_platform_profile = {
-	.handle_kbdlight = true,
-	.platform_profile = true,
-};
-
-static struct quirk_entry quirk_honor_zqcp_m1010 = {
+static struct quirk_entry quirk_honor_zqcp_fan_ec = {
 	.handle_kbdlight = true,
 	.fan_ec = true,
-	.platform_profile = true,
-};
-
-static struct quirk_entry quirk_honor_fmbp = {
-	.handle_kbdlight = true,
-	.platform_profile = true,
 };
 
 static struct quirk_entry quirk_honor_hunter = {
-	.platform_profile = true,
-	.platform_profile_hunter = true,
-};
-
-static struct quirk_entry quirk_honor_dra_hunter = {
 	.handle_kbdlight = true,
-	.platform_profile = true,
 	.platform_profile_hunter = true,
-};
-
-static struct quirk_entry quirk_honor_drbp = {
-	.platform_profile = true,
 };
 
 static struct quirk_entry quirk_mach_wx9 = {
@@ -359,20 +336,27 @@ static const struct dmi_system_id huawei_quirks[] = {
 		},
 		.driver_data = &quirk_kbdlight_auto
 	},
-	/*
-	 * Keep board-specific entries before product-wide matches: dmi_matched()
-	 * returns nonzero, which stops dmi_check_system() after the first match.
-	 */
 	{
 		.callback = dmi_matched,
-		.ident = "HONOR ZQC-P M1010 EC keyboard backlight",
+		.ident = "HONOR ZQC-P M1010 EC fan tachometers",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "ZQC-P"),
 			DMI_MATCH(DMI_BOARD_NAME, "ZQC-P-PCB"),
 			DMI_MATCH(DMI_BOARD_VERSION, "M1010")
 		},
-		.driver_data = &quirk_honor_zqcp_m1010
+		.driver_data = &quirk_honor_zqcp_fan_ec
+	},
+	{
+		.callback = dmi_matched,
+		.ident = "HONOR ZQC-P M1050 EC fan tachometers",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ZQC-P"),
+			DMI_MATCH(DMI_BOARD_NAME, "ZQC-P-PCB"),
+			DMI_MATCH(DMI_BOARD_VERSION, "M1050")
+		},
+		.driver_data = &quirk_honor_zqcp_fan_ec
 	},
 	{
 		.callback = dmi_matched,
@@ -380,9 +364,10 @@ static const struct dmi_system_id huawei_quirks[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX"),
+			DMI_MATCH(DMI_BOARD_NAME, "DRA-XX-PCB"),
 			DMI_MATCH(DMI_BOARD_VERSION, "M1030")
 		},
-		.driver_data = &quirk_honor_dra_hunter
+		.driver_data = &quirk_honor_hunter
 	},
 	{
 		.callback = dmi_matched,
@@ -390,9 +375,10 @@ static const struct dmi_system_id huawei_quirks[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX"),
+			DMI_MATCH(DMI_BOARD_NAME, "DRA-XX-PCB"),
 			DMI_MATCH(DMI_BOARD_VERSION, "M1040")
 		},
-		.driver_data = &quirk_honor_dra_hunter
+		.driver_data = &quirk_honor_hunter
 	},
 	{
 		.callback = dmi_matched,
@@ -415,106 +401,6 @@ static const struct dmi_system_id huawei_quirks[] = {
 			DMI_MATCH(DMI_BOARD_VERSION, "M1100")
 		},
 		.driver_data = &quirk_honor_hunter
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR ZQC-P",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "ZQC-P")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR XWC-P",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "XWC-P")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR FMB-P",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "FMB-P"),
-			DMI_MATCH(DMI_BOARD_NAME, "FMB-P-PCB")
-		},
-		.driver_data = &quirk_honor_fmbp
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR FMB-PM",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "FMB-PM")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR BCC-N",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "BCC-N")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR MRB-XXX",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "MRB-XXX")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR FRB-X",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "FRB-X")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR GLO-GXXX",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "GLO-GXXX")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR FMI-XX",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "FMI-XX")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR DRA-XX",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "DRA-XX")
-		},
-		.driver_data = &quirk_honor_platform_profile
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "HONOR DRB-P",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HONOR"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "DRB-P")
-		},
-		.driver_data = &quirk_honor_drbp
 	},
 	{  }
 };
@@ -1801,13 +1687,6 @@ static void huawei_wmi_platform_profile_setup(struct device *dev)
 	int err;
 #endif
 
-	if (!quirks->platform_profile)
-		return;
-
-	/*
-	 * Not every firmware implements the performance mode commands, and
-	 * an unexpected current mode means the mapping is not safe to use.
-	 */
 	if (huawei_wmi_perf_mode_get(&mode) ||
 	    huawei_wmi_platform_profile_from_mode(mode, &profile))
 		return;

@@ -31,11 +31,12 @@ Fn-lock can be accessed from `/sys/devices/platform/huawei-wmi/fn_lock_state`
 
 ## Platform profile
 
-On supported HONOR laptops, the driver exposes the firmware performance mode
-through the Linux platform profile interface, so power-profiles-daemon and
-other consumers can select it. The DMI allowlist covers ZQC-P, XWC-P, FMB-P
-(including FMB-PM), BCC-N, DRA-XX, DRB-P, MRA-XXX, MRB-XXX, FRB-X, GLO-GXXX,
-and FMI-XX. The available profiles depend on the board revision:
+On laptops whose firmware implements the HWMI performance mode commands, the
+driver exposes the firmware performance mode through the Linux platform
+profile interface, so power-profiles-daemon and other consumers can select it.
+The driver probes GTUB at load and registers the interface only when the
+firmware answers with a known mode, so no per-model allowlist is needed. The
+available profiles depend on the board revision:
 
 | Models | Linux profiles | Firmware modes |
 | --- | --- | --- |
@@ -94,9 +95,9 @@ guessing from AC adapter presence.
 The driver registers a read-only hwmon device named `huawei_wmi`:
 
 * `fan1_input` and `fan2_input` report the current fan RPM from the firmware
-  `GFNS` command. On ZQC-P M1010 the driver falls back to the EC tachometer
-  words at `0x2c-0x2f` when the firmware command does not answer. Values
-  above 20000 RPM are rejected as torn reads.
+  `GFNS` command. On ZQC-P M1010/M1050 the driver falls back to the EC
+  tachometer words at `0x2c-0x2f` when the firmware command does not answer.
+  Values above 20000 RPM are rejected as torn reads.
 * `temp1_input` through `temp11_input` report the firmware `GTMP` zones in
   millidegrees Celsius. The labels follow the firmware table: `cpu`, `TP01`,
   `TSLO`, `TP06`, `TNTC`, `CNTC`, `DNTC`, `battery`, `TP0C`, `TP07`, `TP04`.
