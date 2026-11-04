@@ -1487,20 +1487,17 @@ static int huawei_wmi_perf_mode_set_checked(int mode)
 	return -EBUSY;
 }
 
-/*
- * The firmware "Smart" and "High performance" modes are exposed as the
- * low-power and balanced profiles; HUNTER, where present, is exposed as
- * the performance profile.
- */
 static int huawei_wmi_platform_profile_from_mode(int mode,
 		enum platform_profile_option *profile)
 {
 	switch (mode) {
 	case HWMI_PERF_MODE_SMART:
-		*profile = PLATFORM_PROFILE_LOW_POWER;
+		*profile = quirks->platform_profile_hunter ?
+			PLATFORM_PROFILE_LOW_POWER : PLATFORM_PROFILE_BALANCED;
 		return 0;
 	case HWMI_PERF_MODE_PERFORMANCE:
-		*profile = PLATFORM_PROFILE_BALANCED;
+		*profile = quirks->platform_profile_hunter ?
+			PLATFORM_PROFILE_BALANCED : PLATFORM_PROFILE_PERFORMANCE;
 		return 0;
 	case HWMI_PERF_MODE_HUNTER:
 		if (!quirks->platform_profile_hunter)
@@ -1518,15 +1515,17 @@ huawei_wmi_platform_profile_to_mode(enum platform_profile_option profile,
 {
 	switch (profile) {
 	case PLATFORM_PROFILE_LOW_POWER:
+		if (!quirks->platform_profile_hunter)
+			return -EOPNOTSUPP;
 		*mode = HWMI_PERF_MODE_SMART;
 		return 0;
 	case PLATFORM_PROFILE_BALANCED:
-		*mode = HWMI_PERF_MODE_PERFORMANCE;
+		*mode = quirks->platform_profile_hunter ?
+			HWMI_PERF_MODE_PERFORMANCE : HWMI_PERF_MODE_SMART;
 		return 0;
 	case PLATFORM_PROFILE_PERFORMANCE:
-		if (!quirks->platform_profile_hunter)
-			return -EOPNOTSUPP;
-		*mode = HWMI_PERF_MODE_HUNTER;
+		*mode = quirks->platform_profile_hunter ?
+			HWMI_PERF_MODE_HUNTER : HWMI_PERF_MODE_PERFORMANCE;
 		return 0;
 	default:
 		return -EOPNOTSUPP;
@@ -1537,10 +1536,10 @@ huawei_wmi_platform_profile_to_mode(enum platform_profile_option profile,
 static int huawei_wmi_platform_profile_probe(void *drvdata,
 		unsigned long *choices)
 {
-	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
 	set_bit(PLATFORM_PROFILE_BALANCED, choices);
+	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
 	if (quirks->platform_profile_hunter)
-		set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+		set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
 
 	return 0;
 }
@@ -1705,10 +1704,11 @@ static void huawei_wmi_platform_profile_setup(struct device *dev)
 		huawei->platform_profile_dev = NULL;
 	}
 #else
-	set_bit(PLATFORM_PROFILE_LOW_POWER, huawei->profile_handler.choices);
 	set_bit(PLATFORM_PROFILE_BALANCED, huawei->profile_handler.choices);
+	set_bit(PLATFORM_PROFILE_PERFORMANCE,
+		huawei->profile_handler.choices);
 	if (quirks->platform_profile_hunter)
-		set_bit(PLATFORM_PROFILE_PERFORMANCE,
+		set_bit(PLATFORM_PROFILE_LOW_POWER,
 			huawei->profile_handler.choices);
 
 	huawei->profile_handler.profile_get =

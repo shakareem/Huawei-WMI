@@ -40,15 +40,15 @@ available profiles depend on the board revision:
 
 | Models | Linux profiles | Firmware modes |
 | --- | --- | --- |
-| HONOR models without HUNTER | `low-power`, `balanced` | `0`, `1` |
+| Models without HUNTER | `balanced`, `performance` | `0`, `1` |
 | Confirmed HUNTER revisions | `low-power`, `balanced`, `performance` | `0`, `1`, `3` |
 
-HUNTER mode (`3`) is enabled only for HONOR DRA-XX board versions M1030/M1040
-and DRB-P-PCB board versions M1020/M1100. The mapping is the same on every
-model: `low-power` maps to firmware mode `0` and `balanced` to mode `1`. On
-the confirmed HUNTER revisions, firmware mode `3` is exposed as the Linux
-`performance` profile. Other models do not advertise `performance`, because
-the firmware has no third mode to apply.
+On models without HUNTER, the default Smart mode (`0`) is exposed as
+`balanced` and High performance (`1`) as `performance`. On the confirmed
+HUNTER revisions, Smart is exposed as `low-power`, High performance as
+`balanced`, and HUNTER (`3`) as `performance`. HUNTER mode is enabled only
+for HONOR DRA-XX board versions M1030/M1040 and DRB-P-PCB board versions
+M1020/M1100.
 
 On Linux 6.9 and newer, select the profile through the per-driver class
 device:
